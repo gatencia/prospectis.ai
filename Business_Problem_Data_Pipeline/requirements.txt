@@ -1,0 +1,12 @@
+# Python dependencies
+requests>=2.25.0
+pymongo>=4.0.0
+python-dotenv>=0.20.0
+schedule>=1.1.0
+praw>=7.6.0
+tweepy>=4.14.0
+beautifulsoup4>=4.11.1
+lxml>=4.9.1
+snscrape>=0.4.3.20220106
+NewsApiClient>=0.2.7
+tqdm>=4.64.0
