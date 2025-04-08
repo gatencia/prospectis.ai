@@ -1,16 +1,11 @@
-"""
-Semantic Scholar API client for fetching research papers.
-"""
-
 import requests
 import logging
 import time
-import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
 from research_pipeline.apis.base import BaseAPIClient
-from research_pipeline.models.research_paper import ResearchPaper, Author
+from research_pipeline.models.paper import Paper
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +23,7 @@ class SemanticScholarAPIClient(BaseAPIClient):
         if api_key:
             self.headers["x-api-key"] = api_key
     
-    def fetch_recent_papers(self, days_back: int = 1, limit: int = 100) -> List[ResearchPaper]:
+    def fetch_recent_papers(self, days_back: int = 1, limit: int = 100) -> List[Paper]:
         """
         Fetch recent papers from Semantic Scholar API.
         
@@ -37,7 +32,7 @@ class SemanticScholarAPIClient(BaseAPIClient):
             limit: Maximum number of papers to retrieve
             
         Returns:
-            List of ResearchPaper objects
+            List of Paper objects
         """
         logger.info(f"Fetching papers from Semantic Scholar published in the last {days_back} days (limit: {limit})")
         
@@ -61,9 +56,8 @@ class SemanticScholarAPIClient(BaseAPIClient):
         try:
             response = self._make_request(search_url, params)
             
-            # Add robust error handling
-            if not response or not isinstance(response, dict) or 'data' not in response:
-                logger.warning("Unexpected Semantic Scholar API response format")
+            if not response or not response.get('data'):
+                logger.warning("Semantic Scholar response is empty or missing data field")
                 return []
             
             papers = []
@@ -71,83 +65,44 @@ class SemanticScholarAPIClient(BaseAPIClient):
                 if not paper:
                     continue
                 
-                try:
-                    # Extract author information - convert to Author objects
-                    author_objects = []
-                    if paper.get('authors'):
-                        for author_data in paper['authors']:
-                            if isinstance(author_data, dict) and author_data.get('name'):
-                                author_name = author_data.get('name')
-                                author_objects.append(Author(name=author_name))
-                            elif isinstance(author_data, str):
-                                author_objects.append(Author(name=author_data))
-                    
-                    # Generate a paper_id if not present
-                    paper_id = paper.get('paperId')
-                    if not paper_id:
-                        paper_id = f"ss-{uuid.uuid4()}"
-                    
-                    # Format the published date correctly
-                    published_date = None
-                    date_str = paper.get('publicationDate')
-                    if date_str:
-                        try:
-                            # Try to parse the date - add time component if missing
-                            if 'T' not in date_str and ' ' not in date_str:
-                                date_str = f"{date_str}T00:00:00"
-                            published_date = datetime.fromisoformat(date_str)
-                        except ValueError:
-                            # If parsing fails, use the current date
-                            published_date = datetime.now()
-                    
-                    # Extract additional fields
-                    title = paper.get('title', 'Unknown Title')
-                    abstract = paper.get('abstract', '')
-                    year = paper.get('year')
-                    url = paper.get('url')
-                    
-                    # Extract external IDs
-                    external_ids = paper.get('externalIds', {})
-                    doi = external_ids.get('DOI')
-                    
-                    # Handle venue data
-                    categories = []
-                    venue = None
-                    venue_data = paper.get('venue')
-                    if isinstance(venue_data, dict) and venue_data.get('name'):
-                        venue = venue_data.get('name')
-                    elif isinstance(venue_data, str):
-                        venue = venue_data
-                    
-                    if venue:
-                        categories.append(venue)
-                    
-                    # Create the ResearchPaper object
-                    paper_obj = ResearchPaper(
-                        paper_id=paper_id,
-                        source="semantic_scholar",
-                        source_id=paper_id,
-                        title=title,
-                        abstract=abstract,
-                        authors=author_objects,
-                        published_date=published_date,
-                        url=url,
-                        doi=doi,
-                        categories=categories,
-                        journal=venue,
-                        metadata={"original_response": paper}
-                    )
-                    papers.append(paper_obj)
-                except Exception as e:
-                    logger.error(f"Error processing paper: {str(e)}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    continue
+                # Extract author information
+                authors = []
+                if paper.get('authors'):
+                    for author in paper['authors']:
+                        if author and author.get('name'):
+                            authors.append(author['name'])
+                
+                # Create the paper object
+                publication_date = paper.get('publicationDate')
+                year = paper.get('year', datetime.now().year if not publication_date else None)
+                
+                url = paper.get('url')
+                
+                # Extract external IDs
+                external_ids = paper.get('externalIds', {})
+                doi = external_ids.get('DOI')
+                arxiv_id = external_ids.get('arXiv')
+                
+                paper_obj = Paper(
+                    title=paper.get('title', 'Unknown Title'),
+                    abstract=paper.get('abstract', ''),
+                    authors=authors,
+                    doi=doi,
+                    url=url if url else None,
+                    arxiv_id=arxiv_id,
+                    published_date=publication_date,
+                    year=year,
+                    venue=paper.get('venue', {}).get('name') if paper.get('venue') else None,
+                    source="semantic_scholar",
+                    source_id=paper.get('paperId')
+                )
+                papers.append(paper_obj)
             
             logger.info(f"Successfully fetched {len(papers)} papers from Semantic Scholar")
             return papers
         except Exception as e:
             logger.error(f"Error fetching papers from Semantic Scholar: {str(e)}")
+            # Add traceback for more detailed error information
             import traceback
             logger.error(traceback.format_exc())
             return []
@@ -191,8 +146,8 @@ class SemanticScholarAPIClient(BaseAPIClient):
                 
         logger.error(f"Failed to make request after {max_retries} retries")
         return {}
-
 # Alias for compatibility with main.py
 class SemanticScholarClient(SemanticScholarAPIClient):
     """Alias for SemanticScholarAPIClient for compatibility."""
     pass
+

@@ -1,0 +1,148 @@
+import requests
+import logging
+import time
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+
+from research_pipeline.apis.base import BaseAPIClient
+from research_pipeline.models.paper import Paper
+
+logger = logging.getLogger(__name__)
+
+class SemanticScholarAPIClient(BaseAPIClient):
+    """API client for Semantic Scholar."""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__("Semantic Scholar")
+        self.base_url = "https://api.semanticscholar.org/graph/v1"
+        self.api_key = api_key
+        self.headers = {
+            "User-Agent": "Prospectis/1.0",
+        }
+        
+        if api_key:
+            self.headers["x-api-key"] = api_key
+    
+    def fetch_recent_papers(self, days_back: int = 1, limit: int = 100) -> List[Paper]:
+        """
+        Fetch recent papers from Semantic Scholar API.
+        
+        Args:
+            days_back: Number of days to look back
+            limit: Maximum number of papers to retrieve
+            
+        Returns:
+            List of Paper objects
+        """
+        logger.info(f"Fetching papers from Semantic Scholar published in the last {days_back} days (limit: {limit})")
+        
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days_back)
+        
+        # Format dates for API
+        start_date_str = start_date.strftime("%Y-%m-%d")
+        
+        # Using the paper search endpoint
+        search_query = "machine learning OR artificial intelligence OR computer science"
+        search_url = f"{self.base_url}/paper/search"
+        
+        params = {
+            "query": search_query,
+            "limit": limit,
+            "fields": "title,abstract,authors,year,venue,publicationDate,url,externalIds"
+        }
+        
+        try:
+            response = self._make_request(search_url, params)
+            
+            if not response or not response.get('data'):
+                logger.warning("Semantic Scholar response is empty or missing data field")
+                return []
+            
+            papers = []
+            for paper in response.get('data', []):
+                if not paper:
+                    continue
+                
+                # Extract author information
+                authors = []
+                if paper.get('authors'):
+                    for author in paper['authors']:
+                        if author and author.get('name'):
+                            authors.append(author['name'])
+                
+                # Create the paper object
+                publication_date = paper.get('publicationDate')
+                year = paper.get('year', datetime.now().year if not publication_date else None)
+                
+                url = paper.get('url')
+                
+                # Extract external IDs
+                external_ids = paper.get('externalIds', {})
+                doi = external_ids.get('DOI')
+                arxiv_id = external_ids.get('arXiv')
+                
+                paper_obj = Paper(
+                    title=paper.get('title', 'Unknown Title'),
+                    abstract=paper.get('abstract', ''),
+                    authors=authors,
+                    doi=doi,
+                    url=url if url else None,
+                    arxiv_id=arxiv_id,
+                    published_date=publication_date,
+                    year=year,
+                    venue=paper.get('venue', {}).get('name') if paper.get('venue') else None,
+                    source="semantic_scholar",
+                    source_id=paper.get('paperId')
+                )
+                papers.append(paper_obj)
+            
+            logger.info(f"Successfully fetched {len(papers)} papers from Semantic Scholar")
+            return papers
+        except Exception as e:
+            logger.error(f"Error fetching papers from Semantic Scholar: {str(e)}")
+            # Add traceback for more detailed error information
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+            
+    def _make_request(self, url: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Make a request to the Semantic Scholar API with rate limiting.
+        
+        Args:
+            url: API endpoint URL
+            params: URL parameters
+            
+        Returns:
+            API response as dictionary
+        """
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                response = requests.get(url, params=params, headers=self.headers)
+                
+                if response.status_code == 429:  # Rate limit exceeded
+                    retry_after = int(response.headers.get('Retry-After', 1))
+                    logger.warning(f"Rate limit exceeded. Waiting {retry_after} seconds...")
+                    time.sleep(retry_after)
+                    retry_count += 1
+                    continue
+                    
+                if response.status_code == 403:
+                    logger.error("Access forbidden. Check API key and permissions.")
+                    return {}
+                    
+                response.raise_for_status()
+                return response.json()
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Request error: {str(e)}")
+                retry_count += 1
+                time.sleep(2 ** retry_count)  # Exponential backoff
+                
+        logger.error(f"Failed to make request after {max_retries} retries")
+        return {}
