@@ -25,8 +25,8 @@ IEEE_API_KEY = os.getenv("IEEE_API_KEY")
 SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
 
 # Pipeline settings
-PAPERS_FETCH_LIMIT = int(os.getenv("PAPERS_FETCH_LIMIT", "100"))
-PAPERS_DAYS_LOOKBACK = int(os.getenv("PAPERS_DAYS_LOOKBACK", "3"))
+PAPERS_FETCH_LIMIT = int(os.getenv("PAPERS_FETCH_LIMIT", "500"))
+PAPERS_DAYS_LOOKBACK = int(os.getenv("PAPERS_DAYS_LOOKBACK", "150"))
 SCHEDULER_INTERVAL_HOURS = int(os.getenv("SCHEDULER_INTERVAL_HOURS", "24"))
 
 # Logging settings
@@ -37,4 +37,6 @@ LOG_FILE = os.getenv("LOG_FILE", str(LOGS_DIR / "prospectis.log"))
 LOG_LEVEL_NUM = getattr(logging, LOG_LEVEL, logging.INFO)
 
 # Sources to use in the pipeline
-SOURCES = ["arxiv", "crossref", "ieee", "semantic_scholar"]
+SOURCES = ["arxiv", "crossref", "semantic_scholar"]  # Remove "ieee" by default
+
+

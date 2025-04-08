@@ -6,6 +6,8 @@ Script to run the research pipeline once.
 import sys
 import argparse
 from pathlib import Path
+from pymongo import MongoClient
+
 
 # Add project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,19 +50,41 @@ def main():
     """Run the pipeline with command line arguments."""
     setup_logging()
     args = parse_args()
-    
-    pipeline = ResearchPipeline(sources=args.sources)
-    results = pipeline.run(days_back=args.days, limit=args.limit)
-    
-    # Print summary of results
-    print("\nPipeline Results:")
-    print("-----------------")
-    total = 0
-    for source, count in results.items():
-        print(f"{source}: {count} papers")
-        total += count
-    print(f"Total: {total} papers")
 
+    pipeline = ResearchPipeline(sources=args.sources)
+    total_papers = 0
+    days_back = args.days
+    attempt = 0
+    final_results = {}
+
+    while total_papers < 500 and attempt < 5:  # goal: 500 new papers
+        print(f"\n🔁 Attempt {attempt + 1} — Looking back {days_back} days")
+        
+        # Fetch and store new papers only
+        results, new_this_round = pipeline.run(days_back=days_back, limit=args.limit)
+        total_papers += new_this_round
+
+        # Merge source-specific counts into final_results
+        for source, count in results.items():
+            final_results[source] = final_results.get(source, 0) + count
+
+        if total_papers >= 500:
+            break
+
+        days_back += 30  # Expand time window
+        attempt += 1
+
+    print("\n📊 Final Pipeline Results:")
+    print("---------------------------")
+    for source, count in final_results.items():
+        print(f"{source}: {count} new papers")
+    print(f"Total new papers inserted: {total_papers}")
+    client = MongoClient("mongodb://localhost:27017")
+    db = client["prospectis"]
+    collection = db["research_papers"]
+
+    print("Total documents:", collection.count_documents({}))
+    print("Distinct sources:", collection.distinct("source"))
 
 if __name__ == "__main__":
     main()

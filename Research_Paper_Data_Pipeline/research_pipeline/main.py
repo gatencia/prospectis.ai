@@ -3,7 +3,7 @@ Main entry point for the research papers data pipeline.
 """
 
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import traceback
 from loguru import logger
@@ -15,25 +15,26 @@ from research_pipeline.apis.semantic_scholar import SemanticScholarClient
 from research_pipeline.models.research_paper import ResearchPaper
 from research_pipeline.db.connection import get_papers_collection, close_connection
 from research_pipeline.utils.logging_config import setup_logging
-from research_pipeline.config import PAPERS_FETCH_LIMIT, PAPERS_DAYS_LOOKBACK, SOURCES
-
+from research_pipeline.config import PAPERS_FETCH_LIMIT, PAPERS_DAYS_LOOKBACK, SOURCES, IEEE_API_KEY
 
 class ResearchPipeline:
     """Main pipeline for fetching and processing research papers."""
     
     def __init__(self, sources: Optional[List[str]] = None):
-        """
-        Initialize the research pipeline.
-        
-        Args:
-            sources: List of sources to use (defaults to all)
-        """
+        """Initialize the research pipeline."""
         setup_logging()
         logger.info("Initializing research pipeline")
-        
-        self.sources = sources or SOURCES
+
+        # Dynamically adjust sources if IEEE key is missing
+        if sources is None:
+            sources = SOURCES.copy()
+            if "ieee" in sources and not IEEE_API_KEY:
+                logger.warning("IEEE API key not found — skipping ieee source.")
+                sources.remove("ieee")
+
+        self.sources = sources
         logger.info(f"Using sources: {', '.join(self.sources)}")
-        
+
         # Initialize API clients based on selected sources
         self.clients = {}
         if "arxiv" in self.sources:
@@ -45,111 +46,92 @@ class ResearchPipeline:
         if "semantic_scholar" in self.sources:
             self.clients["semantic_scholar"] = SemanticScholarClient()
     
-    def run(self, days_back: int = None, limit: int = None) -> Dict[str, int]:
+    def run(self, days_back: int, limit: int) -> Tuple[Dict[str, int], int]:
         """
-        Run the pipeline to fetch and store papers.
-        
+        Run the research paper pipeline.
+
         Args:
-            days_back: Number of days to look back (default: from config)
-            limit: Maximum number of papers to fetch per source (default: from config)
-            
+            days_back: Days to look back
+            limit: Number of papers per source to attempt fetching
+
         Returns:
-            Dict with sources as keys and number of papers fetched as values
+            Tuple:
+                - Dictionary of new papers inserted per source
+                - Total new papers inserted
         """
-        days_back = days_back or PAPERS_DAYS_LOOKBACK
-        limit = limit or PAPERS_FETCH_LIMIT
-        
         logger.info(f"Running research pipeline (days_back={days_back}, limit={limit})")
-        
-        start_time = time.time()
         results = {}
-        
-        # Process each source
-        for source, client in self.clients.items():
+        total_new = 0
+
+        for source in self.sources:
+            logger.info(f"Fetching papers from {source}")
+            client = self.clients.get(source)
+            if not client:
+                logger.warning(f"No client for source: {source}")
+                continue
+
             try:
-                source_start = time.time()
-                logger.info(f"Fetching papers from {source}")
-                
-                # Fetch papers from source
                 papers = client.fetch_recent_papers(days_back=days_back, limit=limit)
-                
-                # Store papers in database
-                stored_count = self._store_papers(papers, source)
-                
-                # Record results
-                results[source] = stored_count
-                
-                source_end = time.time()
-                logger.info(f"Processed {source}: fetched {len(papers)}, stored {stored_count} papers in {source_end - source_start:.2f}s")
-                
             except Exception as e:
-                logger.error(f"Error processing source {source}: {str(e)}")
-                logger.error(traceback.format_exc())
-                results[source] = 0
-        
-        # Close API client sessions
-        self._close_clients()
-        
-        end_time = time.time()
-        total_papers = sum(results.values())
-        logger.info(f"Pipeline completed: processed {total_papers} papers in {end_time - start_time:.2f}s")
-        
-        return results
-    
+                logger.error(f"Error fetching papers from {source}: {e}")
+                papers = []
+
+            new_count = self._store_papers(papers, source)
+            results[source] = new_count
+            total_new += new_count
+
+            logger.info(f"Processed {source}: stored {new_count} new papers")
+
+        close_connection()
+        logger.info(f"Pipeline completed: inserted {total_new} new papers")
+        return results, total_new
+
     def _store_papers(self, papers: List[ResearchPaper], source: str) -> int:
         """
         Store papers in the database.
-        
+
         Args:
             papers: List of papers to store
             source: Source of the papers
-            
+
         Returns:
-            Number of papers stored
+            Number of new papers inserted
         """
         if not papers:
             logger.warning(f"No papers to store from {source}")
             return 0
-            
+
         logger.info(f"Storing {len(papers)} papers from {source}")
-        
-        # Get papers collection
         collection = get_papers_collection()
-        
-        # Track stats
+
         new_count = 0
-        updated_count = 0
-        
+
         for paper in papers:
-            # Convert to dict for storage
             paper_dict = paper.to_dict()
-            
+
             try:
-                # Check if paper already exists
                 existing_paper = collection.find_one({
                     "source": paper.source,
                     "source_id": paper.source_id
                 })
-                
+
                 if existing_paper:
-                    # Update the paper with new info
                     paper_dict["last_updated"] = datetime.utcnow()
                     collection.update_one(
                         {"_id": existing_paper["_id"]},
                         {"$set": paper_dict}
                     )
-                    updated_count += 1
                 else:
-                    # Insert new paper
                     collection.insert_one(paper_dict)
                     new_count += 1
-                    
+
             except Exception as e:
-                logger.error(f"Error storing paper {paper.paper_id}: {str(e)}")
-        
-        logger.info(f"Stored {new_count} new papers and updated {updated_count} papers from {source}")
-        return new_count + updated_count
-    
+                logger.warning(f"Failed to store paper from {source}: {e}")
+                continue
+
+        logger.info(f"Stored {new_count} new papers from {source}")
+        return new_count
+
     def _close_clients(self):
         """Close all API client sessions."""
         for source, client in self.clients.items():

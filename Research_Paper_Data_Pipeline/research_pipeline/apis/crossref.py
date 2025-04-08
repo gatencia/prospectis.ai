@@ -56,81 +56,65 @@ class CrossRefClient(BaseAPIClient):
     def fetch_recent_papers(self, days_back: int = 3, limit: int = 100) -> List[ResearchPaper]:
         """
         Fetch papers published in the last n days from CrossRef.
-        
+
         Args:
             days_back: Number of days to look back
             limit: Maximum number of papers to fetch
-            
+
         Returns:
             List of ResearchPaper objects
         """
         logger.info(f"Fetching papers from CrossRef published in the last {days_back} days (limit: {limit})")
-        
-        # Calculate date range
+
         date_since = self.get_date_n_days_ago(days_back)
         date_str = date_since.strftime("%Y-%m-%d")
+
+        subject_filter = " OR ".join([f"subject:\"{category}\"" for category in self.CS_CATEGORIES])
         
-        # Prepare query parameters
-        params = {
+        base_params = {
             "filter": f"from-pub-date:{date_str},has-abstract:true",
             "sort": "published",
             "order": "desc",
-            "rows": min(limit, 100),  # CrossRef max is 100 per page
-            "select": "DOI,title,abstract,author,published-print,published-online,subject,URL,resource,type,container-title"
+            "select": "DOI,title,abstract,author,published-print,published-online,subject,URL,resource,type,container-title",
+            "query": subject_filter
         }
-        
-        # Add filter for CS subjects (not perfect, but helps)
-        subject_filter = " OR ".join([f"subject:\"{category}\"" for category in self.CS_CATEGORIES])
-        params["query"] = subject_filter
-        
-        logger.debug(f"CrossRef query params: {params}")
-        
-        # Fetch papers with pagination
+
         papers = []
         offset = 0
-        
+        page_size = 100  # CrossRef limit per request
+
         while len(papers) < limit:
-            current_params = {**params, "offset": offset}
-            
+            params = base_params.copy()
+            params["rows"] = min(page_size, limit - len(papers))
+            params["offset"] = offset
+
             try:
-                response = self._make_request(
-                    url=self.BASE_URL,
-                    params=current_params
-                )
-                
-                data = response.json()
-                results = data.get("message", {}).get("items", [])
-                
-                if not results:
-                    logger.debug("No more results from CrossRef")
-                    break
-                
-                # Process results
-                for item in results:
-                    # Skip non-CS papers as best we can
+                response = self.session.get(self.BASE_URL, params=params)
+                response.raise_for_status()
+                items = response.json().get("message", {}).get("items", [])
+            except Exception as e:
+                logger.error(f"Failed to fetch from CrossRef: {e}")
+                break
+
+            if not items:
+                logger.info("No more results from CrossRef.")
+                break
+
+            for item in items:
+                try:
                     if not self._is_cs_paper(item):
-                        continue
-                    
+                        continue  # Skip if not related to computer science
                     paper = self._convert_to_model(item)
                     papers.append(paper)
-                    
-                    # Check if we've reached the limit
-                    if len(papers) >= limit:
-                        break
-                
-                # Increment offset for pagination
-                offset += len(results)
-                
-                # Be nice to the API
-                time.sleep(1)
-                
-            except Exception as e:
-                logger.error(f"Error fetching papers from CrossRef: {str(e)}")
-                break
-        
+                except Exception as parse_err:
+                    logger.warning(f"Failed to parse CrossRef paper: {parse_err}")
+
+            offset += page_size
+            time.sleep(1)  # be nice to the API
+
         logger.info(f"Successfully fetched {len(papers)} papers from CrossRef")
         return papers
-    
+
     def _is_cs_paper(self, item: Dict[str, Any]) -> bool:
         """
         Check if a paper is related to computer science.
